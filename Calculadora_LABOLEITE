@@ -1,0 +1,427 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import io
+from datetime import datetime
+
+# =============================
+# Funções auxiliares para PDF (opcional)
+# =============================
+try:
+    from fpdf import FPDF
+    fpdf_available = True
+except ImportError:
+    fpdf_available = False
+
+# =============================
+# Configuração da Página
+# =============================
+
+st.set_page_config(page_title="Calculadora de Emissões de GEE - LABOLEITE", layout="wide")
+
+# =============================
+# Textos do sistema para internacionalização futura
+# =============================
+TEXTS = {
+    "pt": {
+        "title": "🧀 Calculadora de Emissões de GEE na Produção Artesanal de Queijos",
+        "subtitle": "LABOLEITE - Plataforma de Avaliação de Sustentabilidade",
+        "intro": """
+        Esta calculadora estima as emissões de gases de efeito estufa (GEE) na produção artesanal de queijos, 
+        aplicando metodologias do IPCC 2019, GHG Protocol e normas ISO 14040/44, adaptadas para o Brasil.
+        """,
+        "sidebar_title": "📊 Entrada de Dados",
+        "production": "Produção",
+        "milk_qty": "Quantidade de leite (litros)",
+        "milk_qty_help": "Informe o volume total de leite processado no período considerado.",
+        "cheese_yield": "Rendimento de queijo (kg)",
+        "cheese_yield_help": "Informe o total de queijo produzido a partir do leite informado (em kg).",
+        "cheese_pieces": "Número de peças de queijo",
+        "cheese_pieces_help": "Informe o número total de peças de queijo produzidas.",
+        "yield_percent": "Rendimento percentual (%)",
+        "yield_percent_help": "Informe o rendimento típico de conversão leite-queijo (kg queijo por 100L leite).",
+        "energy": "Energia",
+        "proc_energy": "Consumo de energia elétrica (kWh)",
+        "proc_energy_help": "Consumo total de energia elétrica no processamento.",
+        "ref_energy": "Consumo de energia - tanque de expansão (kWh)",
+        "ref_energy_help": "Energia elétrica utilizada para resfriamento do leite.",
+        "fuel": "Combustíveis",
+        "fuel_type": "Tipo de combustível",
+        "fuel_type_help": "Selecione o tipo principal de combustível fóssil ou biomassa utilizado.",
+        "fuel_select_multi": "Selecione os combustíveis utilizados",
+        "fuel_qty": "Uso de combustíveis (litros ou kg)",
+        "fuel_qty_help": "Informe o total consumido do combustível selecionado.",
+        "maturation": "Maturação",
+        "maturation_days": "Tempo de maturação (dias)",
+        "maturation_days_help": "Informe o tempo médio de maturação dos queijos produzidos.",
+        "waste": "Resíduos",
+        "waste_handling": "Manejo de resíduos e efluentes",
+        "waste_handling_help": "Escolha a opção que melhor representa o manejo dos resíduos líquidos do processo.",
+        "scenario": "⚙️ Cenário Comparativo",
+        "enable_scenario": "Ativar comparação de cenários",
+        "scenario2_energy": "Cenário 2 - Energia elétrica (kWh)",
+        "scenario2_fuel": "Cenário 2 - Combustíveis (litros ou kg)",
+        "edit_fe": "⚗️ Fatores de Emissão Personalizáveis",
+        "edit_fe_btn": "Editar fatores de emissão",
+        "restore_fe_btn": "Restaurar fatores padrão",
+        "fe_energy": "Fator energia (tCO2e/kWh)",
+        "fe_energy_help": "Valor padrão médio Brasil: 0,084 tCO2e/kWh",
+        "fe_maturation": "Fator maturação (tCO2e/dia/1000L)",
+        "fe_maturation_help": "Emissão de maturação por dia e por 1000 litros de leite",
+        "fe_waste": "Fator efluente (tCO2e)",
+        "fe_waste_help": "Padrão para descarga sem tratamento: 0,01. Tratamento adequado: 0,002.",
+        "fe_fuel": "Fator combustível (tCO2e/L ou kg)",
+        "fe_fuel_help": "Valor depende do tipo de combustível selecionado.",
+        "fe_source": "Fontes: MCTI 2023, IPCC 2019, GHG Protocol",
+        "results": "📈 Resultados de Emissões",
+        "main_scenario": "🔹 Cenário Principal",
+        "scenario2": "🔸 Cenário Comparativo",
+        "total_emissions": "Total de emissões",
+        "per_liter": "Emissões por litro de leite",
+        "per_kg_cheese": "Emissões por kg de queijo",
+        "per_piece": "Emissões por peça de queijo",
+        "export_excel": "📤 Exportar resultados para Excel Completo",
+        "export_pdf": "Exportar como PDF",
+        "graph_title": "📊 Gráfico de Emissões por Etapa",
+        "mitigate": "💡 Sugestões de Mitigação",
+        "footer": "LABOLEITE © 2025 - Todos os direitos reservados",
+        "good_practices": "✅ Seu processo já apresenta boas práticas ambientais.",
+        "report": "📄 Relatório Final",
+        "tab_inputs": "Entradas",
+        "tab_results": "Resultados",
+        "tab_graphs": "Gráficos",
+        "tab_report": "Relatório",
+        "example_btn": "Ver exemplo",
+        "yield_alert": "O rendimento informado está fora do intervalo típico para queijos (8-15%)!",
+        "pdf_not_available": "Biblioteca FPDF não disponível. Instale 'fpdf' para exportar PDF."
+    }
+}
+LANG = "pt"
+T = lambda x: TEXTS[LANG][x]
+
+# =============================
+# Fatores de Emissão padrão
+# =============================
+FE_PADRAO = {
+    "Diesel": 2.52,  # tCO2e/litro
+    "Gás": 2.75,     # tCO2e/kg
+    "Lenha": 0.1     # tCO2e/kg
+}
+FE_ENERGIA_PADRAO = 0.084  # tCO2e/kWh (Média Brasil)
+FE_MATURACAO_PADRAO = 0.002  # tCO2e por dia de maturação por 1000L
+FE_EFLUENTE_PADRAO = {"Tratamento adequado": 0.002, "Descarga sem tratamento": 0.01}
+
+# =============================
+# State para fatores de emissão
+# =============================
+if "FE_ENERGIA" not in st.session_state:
+    st.session_state["FE_ENERGIA"] = FE_ENERGIA_PADRAO
+if "FE_MATURACAO" not in st.session_state:
+    st.session_state["FE_MATURACAO"] = FE_MATURACAO_PADRAO
+if "FE_EFLUENTE" not in st.session_state:
+    st.session_state["FE_EFLUENTE"] = FE_EFLUENTE_PADRAO["Descarga sem tratamento"]
+if "FE_COMBUSTIVEIS" not in st.session_state:
+    st.session_state["FE_COMBUSTIVEIS"] = FE_PADRAO.copy()
+
+# =============================
+# FUNÇÃO - Cálculo de emissões
+# =============================
+def calcular_emissoes(energia, refrigeracao, combustiveis_dict, tempo_maturacao, leite, efluente):
+    fe_comb = st.session_state["FE_COMBUSTIVEIS"]
+    fe_energia = st.session_state["FE_ENERGIA"]
+    fe_maturacao = st.session_state["FE_MATURACAO"]
+    fe_efluente = st.session_state["FE_EFLUENTE"] if efluente == "Descarga sem tratamento" else FE_EFLUENTE_PADRAO["Tratamento adequado"]
+    escopo1 = sum(combustiveis_dict[k] * fe_comb[k] for k in combustiveis_dict) + fe_efluente
+    escopo2 = (energia + refrigeracao) * fe_energia
+    maturacao = (tempo_maturacao / 10) * fe_maturacao  # proporcional
+    total = escopo1 + escopo2 + maturacao
+    return {
+        "Escopo 1 - Diretas": escopo1,
+        "Escopo 2 - Energia elétrica": escopo2,
+        "Maturação": maturacao,
+        "Total": total
+    }
+
+# =============================
+# TABS Interface
+# =============================
+tab1, tab2, tab3, tab4 = st.tabs([T("tab_inputs"), T("tab_results"), T("tab_graphs"), T("tab_report")])
+
+with tab1:
+    st.title(T("title"))
+    st.subheader(T("subtitle"))
+    st.markdown(T("intro"))
+
+    st.sidebar.title(T("sidebar_title"))
+
+    # Produção
+    st.sidebar.subheader(T("production"))
+    leite = st.sidebar.number_input(
+        T("milk_qty"), min_value=1.0, value=1000.0, help=T("milk_qty_help")
+    )
+    rendimento_percentual = st.sidebar.number_input(
+        T("yield_percent"), min_value=5.0, max_value=25.0, value=10.0, help=T("yield_percent_help")
+    )
+    rendimento_queijo = leite * rendimento_percentual / 100
+    st.sidebar.write(f"Rendimento estimado: {rendimento_queijo:.1f} kg de queijo")
+    if rendimento_percentual < 8 or rendimento_percentual > 15:
+        st.sidebar.warning(T("yield_alert"))
+    num_pecas = st.sidebar.number_input(
+        T("cheese_pieces"), min_value=1, value=50, help=T("cheese_pieces_help")
+    )
+
+    # Energia
+    st.sidebar.subheader(T("energy"))
+    energia_processamento = st.sidebar.number_input(
+        T("proc_energy"), min_value=0.0, value=150.0, help=T("proc_energy_help")
+    )
+    energia_refrigeracao = st.sidebar.number_input(
+        T("ref_energy"), min_value=0.0, value=80.0, help=T("ref_energy_help")
+    )
+
+    # Combustíveis - múltiplos suportados
+    st.sidebar.subheader(T("fuel"))
+    combustiveis_dict = {}
+    combustiveis_usados = st.sidebar.multiselect(
+        T("fuel_select_multi"), list(FE_PADRAO.keys()), default=["Diesel"]
+    )
+    for cb in combustiveis_usados:
+        combustiveis_dict[cb] = st.sidebar.number_input(
+            f"{cb} (L ou kg)", min_value=0.0, value=0.0, help=f"Consumo de {cb}."
+        )
+
+    # Maturação
+    st.sidebar.subheader(T("maturation"))
+    tempo_maturacao = st.sidebar.number_input(
+        T("maturation_days"), min_value=0, value=10, help=T("maturation_days_help")
+    )
+
+    # Resíduos
+    st.sidebar.subheader(T("waste"))
+    efluentes = st.sidebar.selectbox(
+        T("waste_handling"), ["Tratamento adequado", "Descarga sem tratamento"], help=T("waste_handling_help")
+    )
+
+    # Cenário comparativo
+    st.sidebar.subheader(T("scenario"))
+    cenarios = st.sidebar.checkbox(T("enable_scenario"))
+    if cenarios:
+        energia_processamento_2 = st.sidebar.number_input(
+            T("scenario2_energy"), min_value=0.0, value=100.0
+        )
+        combustiveis_dict_2 = {}
+        for cb in combustiveis_usados:
+            combustiveis_dict_2[cb] = st.sidebar.number_input(
+                f"Cenário 2 - {cb} (L ou kg)", min_value=0.0, value=0.0
+            )
+
+    # Fatores de emissão personalizáveis
+    st.sidebar.subheader(T("edit_fe"))
+    edit_FE = st.sidebar.checkbox(T("edit_fe_btn"))
+    if st.sidebar.button(T("restore_fe_btn")):
+        st.session_state["FE_ENERGIA"] = FE_ENERGIA_PADRAO
+        st.session_state["FE_MATURACAO"] = FE_MATURACAO_PADRAO
+        st.session_state["FE_EFLUENTE"] = FE_EFLUENTE_PADRAO[efluentes]
+        st.session_state["FE_COMBUSTIVEIS"] = FE_PADRAO.copy()
+    if edit_FE:
+        st.session_state["FE_ENERGIA"] = st.sidebar.number_input(
+            T("fe_energy"), value=st.session_state["FE_ENERGIA"], step=0.001, help=T("fe_energy_help")
+        )
+        st.session_state["FE_MATURACAO"] = st.sidebar.number_input(
+            T("fe_maturation"), value=st.session_state["FE_MATURACAO"], step=0.001, help=T("fe_maturation_help")
+        )
+        st.session_state["FE_EFLUENTE"] = st.sidebar.number_input(
+            T("fe_waste"), value=FE_EFLUENTE_PADRAO[efluentes], step=0.001, help=T("fe_waste_help")
+        )
+        st.sidebar.caption(T("fe_source"))
+        for cb in combustiveis_usados:
+            st.session_state["FE_COMBUSTIVEIS"][cb] = st.sidebar.number_input(
+                f"FE {cb} (tCO2e/L ou kg)", value=st.session_state["FE_COMBUSTIVEIS"][cb], step=0.01, help=T("fe_fuel_help")
+            )
+
+with tab2:
+    st.header(T("results"))
+
+    resultado = calcular_emissoes(
+        energia_processamento, energia_refrigeracao, combustiveis_dict,
+        tempo_maturacao, leite, efluentes
+    )
+
+    if cenarios:
+        resultado_2 = calcular_emissoes(
+            energia_processamento_2, energia_refrigeracao, combustiveis_dict_2,
+            tempo_maturacao, leite, efluentes
+        )
+
+    col1, col2 = st.columns(2)
+    emissoes_por_litro = resultado['Total'] / leite
+    emissoes_por_kg_queijo = resultado['Total'] / rendimento_queijo
+    emissoes_por_peca = resultado['Total'] / num_pecas
+
+    with col1:
+        st.subheader(T("main_scenario"))
+        st.metric(T("total_emissions"), f"{resultado['Total']:.3f} tCO2e")
+        st.write(pd.DataFrame.from_dict(resultado, orient="index", columns=["tCO2e"]))
+        st.metric(T("per_liter"), f"{emissoes_por_litro:.5f} tCO2e/L")
+        st.metric(T("per_kg_cheese"), f"{emissoes_por_kg_queijo:.5f} tCO2e/kg")
+        st.metric(T("per_piece"), f"{emissoes_por_peca:.5f} tCO2e/peça")
+
+    with col2:
+        if cenarios:
+            emiss_litro_2 = resultado_2['Total'] / leite
+            emiss_kg_2 = resultado_2['Total'] / rendimento_queijo
+            emiss_peca_2 = resultado_2['Total'] / num_pecas
+            st.subheader(T("scenario2"))
+            st.metric(T("total_emissions"), f"{resultado_2['Total']:.3f} tCO2e")
+            st.write(pd.DataFrame.from_dict(resultado_2, orient="index", columns=["tCO2e"]))
+            st.metric(T("per_liter"), f"{emiss_litro_2:.5f} tCO2e/L")
+            st.metric(T("per_kg_cheese"), f"{emiss_kg_2:.5f} tCO2e/kg")
+            st.metric(T("per_piece"), f"{emiss_peca_2:.5f} tCO2e/peça")
+
+    # Exportação Excel detalhada
+    df_entrada = pd.DataFrame({
+        "Parâmetro": [
+            "Leite (L)", "Rendimento (%)", "Rendimento (kg)", "Peças", "Energia Processo (kWh)",
+            "Energia Refri (kWh)", "Tempo Maturação (dias)", "Efluentes"
+        ] + [f"{cb} (L/kg)" for cb in combustiveis_dict],
+        "Valor": [
+            leite, rendimento_percentual, rendimento_queijo, num_pecas, energia_processamento,
+            energia_refrigeracao, tempo_maturacao, efluentes
+        ] + [combustiveis_dict[cb] for cb in combustiveis_dict]
+    })
+    df_result = pd.DataFrame.from_dict(resultado, orient="index", columns=["tCO2e"])
+    df_result.loc[T("per_liter")] = [emissoes_por_litro]
+    df_result.loc[T("per_kg_cheese")] = [emissoes_por_kg_queijo]
+    df_result.loc[T("per_piece")] = [emissoes_por_peca]
+
+    if cenarios:
+        df_result_2 = pd.DataFrame.from_dict(resultado_2, orient="index", columns=["tCO2e"])
+        df_result_2.loc[T("per_liter")] = [emiss_litro_2]
+        df_result_2.loc[T("per_kg_cheese")] = [emiss_kg_2]
+        df_result_2.loc[T("per_piece")] = [emiss_peca_2]
+
+    if st.button(T("export_excel")):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            df_entrada.to_excel(writer, sheet_name='Entradas', index=False)
+            df_result.to_excel(writer, sheet_name='Resultados')
+            if cenarios:
+                df_result_2.to_excel(writer, sheet_name='Cenário 2')
+        st.download_button(
+            label=T("export_excel"),
+            data=output.getvalue(),
+            file_name="emissoes_queijo_detalhado.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    # Exportação PDF (opcional)
+    if st.button(T("export_pdf")):
+        if fpdf_available:
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font('Arial', 'B', 16)
+            pdf.cell(0, 10, T("title"), 0, 1, 'C')
+            pdf.set_font('Arial', '', 12)
+            pdf.cell(0, 10, f"Data: {datetime.now():%d/%m/%Y %H:%M}", 0, 1)
+            pdf.cell(0, 10, f"Leite: {leite} L - Queijo: {rendimento_queijo:.1f} kg - Peças: {num_pecas}", 0, 1)
+            pdf.cell(0, 10, f"Energia: {energia_processamento+energia_refrigeracao} kWh", 0, 1)
+            pdf.cell(0, 10, f"Combustíveis: {', '.join([f'{cb}: {combustiveis_dict[cb]}' for cb in combustiveis_dict])}", 0, 1)
+            pdf.cell(0, 10, f"Maturação: {tempo_maturacao} dias - Efluente: {efluentes}", 0, 1)
+            pdf.set_font('Arial', 'B', 13)
+            pdf.cell(0, 10, "Resultados:", 0, 1)
+            pdf.set_font('Arial', '', 12)
+            for k,v in resultado.items():
+                pdf.cell(0, 10, f"{k}: {v:.3f} tCO2e", 0, 1)
+            pdf.cell(0, 10, f"{T('per_liter')}: {emissoes_por_litro:.5f} tCO2e/L", 0, 1)
+            pdf.cell(0, 10, f"{T('per_kg_cheese')}: {emissoes_por_kg_queijo:.5f} tCO2e/kg", 0, 1)
+            pdf.cell(0, 10, f"{T('per_piece')}: {emissoes_por_peca:.5f} tCO2e/peça", 0, 1)
+            output_pdf = io.BytesIO(pdf.output(dest='S').encode('latin-1'))
+            st.download_button(
+                label="Baixar PDF",
+                data=output_pdf,
+                file_name="emissoes_queijo.pdf",
+                mime="application/pdf"
+            )
+        else:
+            st.warning(T("pdf_not_available"))
+
+with tab3:
+    st.header(T("graph_title"))
+
+    fig, ax = plt.subplots(figsize=(8,5))
+    labels = list(resultado.keys())[:-1]  # sem o total
+    valores = [resultado[k] for k in labels]
+    bar_width = 0.35
+
+    ax.bar(np.arange(len(labels)), valores, width=bar_width, label=T("main_scenario"))
+
+    if cenarios:
+        valores_2 = [resultado_2[k] for k in labels]
+        ax.bar(np.arange(len(labels))+bar_width, valores_2, width=bar_width, alpha=0.5, label=T("scenario2"))
+        ax.set_xticks(np.arange(len(labels)) + bar_width/2)
+    else:
+        ax.set_xticks(np.arange(len(labels)))
+
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("tCO2e")
+    ax.set_title("Distribuição das emissões por etapa")
+    ax.legend()
+
+    st.pyplot(fig)
+
+    # Gráfico comparativo por litro e por kg
+    st.markdown("#### Comparação Normalizada")
+    norm_labels = [T("per_liter"), T("per_kg_cheese"), T("per_piece")]
+    norm_values1 = [emissoes_por_litro, emissoes_por_kg_queijo, emissoes_por_peca]
+    if cenarios:
+        norm_values2 = [emiss_litro_2, emiss_kg_2, emiss_peca_2]
+    fig2, ax2 = plt.subplots(figsize=(6,4))
+    ax2.bar(np.arange(len(norm_labels)), norm_values1, width=bar_width, label=T("main_scenario"))
+    if cenarios:
+        ax2.bar(np.arange(len(norm_labels))+bar_width, norm_values2, width=bar_width, alpha=0.5, label=T("scenario2"))
+        ax2.set_xticks(np.arange(len(norm_labels)) + bar_width/2)
+    else:
+        ax2.set_xticks(np.arange(len(norm_labels)))
+    ax2.set_xticklabels(norm_labels)
+    ax2.set_ylabel("tCO2e")
+    ax2.set_title("Emissões normalizadas")
+    ax2.legend()
+    st.pyplot(fig2)
+
+with tab4:
+    st.header(T("report"))
+    st.markdown(f"**Data:** {datetime.now():%d/%m/%Y %H:%M}")
+    st.markdown(f"**Leite processado:** {leite} L")
+    st.markdown(f"**Rendimento de queijo:** {rendimento_queijo:.1f} kg")
+    st.markdown(f"**Número de peças:** {num_pecas}")
+    st.markdown(f"**Energias:** {energia_processamento+energia_refrigeracao} kWh")
+    st.markdown(f"**Combustíveis:** {', '.join([f'{cb}: {combustiveis_dict[cb]}' for cb in combustiveis_dict])}")
+    st.markdown(f"**Maturação:** {tempo_maturacao} dias")
+    st.markdown(f"**Efluentes:** {efluentes}")
+    st.markdown("### Resultados Principais")
+    st.write(df_result)
+    st.markdown("### Sugestões de Mitigação")
+    sugestoes = []
+    # Sugestões personalizadas
+    if resultado['Escopo 2 - Energia elétrica'] > resultado['Escopo 1 - Diretas']:
+        sugestoes.append("- Considere investir em energia solar para reduzir o consumo elétrico.")
+    if any(combustiveis_dict[cb] > 0 for cb in combustiveis_dict):
+        if not ("Lenha" in combustiveis_dict and combustiveis_dict["Lenha"] > 0):
+            sugestoes.append("- Avalie substituir combustíveis fósseis por biomassa ou fontes renováveis.")
+        else:
+            sugestoes.append("- Certifique-se de que a lenha é de origem renovável e reflorestada.")
+    if tempo_maturacao > 20:
+        sugestoes.append("- Reduza o tempo de maturação ou otimize as câmaras para maior eficiência energética.")
+    if efluentes == "Descarga sem tratamento":
+        sugestoes.append("- Implemente tratamento adequado dos efluentes para reduzir emissões e impactos ambientais.")
+    if rendimento_percentual < 8 or rendimento_percentual > 15:
+        sugestoes.append("- Revise o rendimento do processo: valores típicos estão entre 8% e 15%.")
+    if sugestoes:
+        for s in sugestoes:
+            st.write(s)
+    else:
+        st.write(T("good_practices"))
+
+st.markdown("---")
+st.caption(T("footer"))
